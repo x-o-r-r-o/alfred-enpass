@@ -1,0 +1,11 @@
+# Personal workflow configuration — never commit
+prefs.plist
+
+# Build output (attached to GitHub releases instead)
+dist/
+
+.DS_Store
+
+# Local drafts
+PLAN.md
+forum-post.md

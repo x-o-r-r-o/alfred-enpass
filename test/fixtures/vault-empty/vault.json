@@ -1,0 +1,19 @@
+{
+    "creating_device": "BBB2",
+    "encryption_algo": "aes-256-cbc",
+    "have_keyfile": 0,
+    "kdf_algo": "pbkdf2",
+    "kdf_iter": 320000,
+    "last_modified_by_user": "local",
+    "last_modified_device": "BBB2",
+    "last_modified_time": 1768392057,
+    "last_password_changed_by": "local",
+    "last_password_changed_time": 1768390039,
+    "last_password_changing_device": "BBB2",
+    "vault_att_count": 0,
+    "vault_icon": "vault/v3",
+    "vault_items_count": 1,
+    "vault_name": "EmptyVault",
+    "vault_uuid": "00000000-0000-4000-8000-000000000000",
+    "version": 6
+}
