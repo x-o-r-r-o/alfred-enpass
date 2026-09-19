@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 — 2026-09-19
+
+- New: **Touch ID** option. The vault locks after a chosen idle time (**Auto-Lock**: every copy, 1 minute – 4 hours,
+  or when the Mac restarts) and unlocks with Touch ID. Macs without Touch ID use the Mac password (or an Apple Watch);
+  Macs without a login password use the Enpass master password.
+- New: **Lock Vault** row (type `lock`).
+- Search results are never cached while Touch ID is on, so a locked vault never shows entries.
+
 ## 1.0.1 — 2026-09-19
 
 Security and reliability fixes from two independent code audits and live testing.

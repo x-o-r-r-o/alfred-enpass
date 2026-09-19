@@ -16,7 +16,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / "workflow"
 DIST = ROOT / "dist"
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 BUNDLE_ID = "com.x-o-r-r-o.alfred.enpass"
 PACKAGE = "Enpass.alfredworkflow"
 # Only these files are shipped; anything else in workflow/ (e.g. prefs.plist) stays local
@@ -145,6 +145,15 @@ user_config = [
                                            ["After 30 seconds", "30"], ["After 45 seconds", "45"],
                                            ["After 60 seconds", "60"], ["After 90 seconds", "90"],
                                            ["Never", "0"]]}},
+    {"type": "checkbox", "variable": "touch_id", "label": "Touch ID",
+     "description": "Macs without Touch ID ask for your Mac password instead. The master password is still needed once.",
+     "config": {"default": False, "required": False, "text": "Require Touch ID or your Mac password to unlock"}},
+    {"type": "popupbutton", "variable": "auto_lock", "label": "Auto-Lock",
+     "description": "When Touch ID is on: lock the vault again after this much inactivity.",
+     "config": {"default": "15", "pairs": [["For every copy", "each"], ["After 1 minute", "1"],
+                                           ["After 5 minutes", "5"], ["After 15 minutes", "15"],
+                                           ["After 30 minutes", "30"], ["After 1 hour", "60"],
+                                           ["After 4 hours", "240"], ["When the Mac restarts", "restart"]]}},
     {"type": "checkbox", "variable": "show_trashed", "label": "Trash",
      "description": "",
      "config": {"default": False, "required": False, "text": "Include entries in the Enpass trash"}},

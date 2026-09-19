@@ -10,6 +10,7 @@
 
 ObjC.import("Foundation")
 ObjC.import("AppKit")
+ObjC.import("LocalAuthentication")
 
 const DEFAULT_BUNDLE_ID = "com.x-o-r-r-o.alfred.enpass"
 const DEFAULT_VAULT = "~/Library/Containers/in.sinew.Enpass-Desktop/Data/Documents/Vaults/primary"
@@ -88,6 +89,9 @@ const config = {
   defaultAction: envVar("default_action", "copy") === "paste" ? "paste" : "copy",
   clearAfter: Math.max(0, parseInt(envVar("clear_after", "30"), 10) || 0),
   showTrashed: envVar("show_trashed", "0") === "1",
+  // Touch ID: "off", or the auto-lock setting: "each" (every copy), minutes of inactivity, or "restart"
+  touchId: envVar("touch_id", "0") === "1" ? envVar("auto_lock", "15") : "off",
+  cacheDir: envVar("alfred_workflow_cache", $.NSTemporaryDirectory().js + "enpass-alfred"),
   bundleId: envVar("alfred_workflow_bundleid", DEFAULT_BUNDLE_ID),
   // Test hooks (test/run.sh): a separate Keychain service, and in dry-run mode no pasting, opening,
   // Alfred scripting or dialogs (the dialog answer comes from enpass_test_answer)
@@ -337,15 +341,113 @@ function deletePassword(vault) {
   return result.status === 0
 }
 
-// Returns the vault and a working master password, or throws a SetupError
-function unlock() {
+function hasPassword(vault) {
+  // Attributes only (no -w): checks the item exists without reading the password
+  return exec("/usr/bin/security", ["find-generic-password", "-s", keychainService(), "-a", vault.account]).status === 0
+}
+
+// Returns the vault and a working master password, or throws a SetupError.
+// With Touch ID on, a locked vault is unlocked by a Touch ID prompt when `prompt` is true
+// (actions, which run after Alfred's window has closed) or shown as a locked row otherwise (Script Filters).
+function unlock({ prompt = false } = {}) {
   const vault = loadVault()
-  const password = getPassword(vault)
-  if (password === null) {
+  if (!hasPassword(vault)) {
     throw new SetupError("setpassword", "Unlock " + vault.name + " vault",
       "↩ Enter your Enpass master password (saved in your macOS Keychain)")
   }
-  return { vault, password }
+  let authenticated = false
+  if (touchIdEnabled() && !sessionValid(vault)) {
+    if (!prompt) throw new SetupError("locked", vault.name + " vault is locked", unlockHint())
+    if (!authenticate(vault)) throw new SetupError("error", "Vault still locked", "Unlocking wasn’t confirmed")
+    authenticated = true
+  }
+  const password = getPassword(vault)
+  if (password === null) throw new SetupError("setpassword", "Unlock " + vault.name + " vault", "↩ Enter your Enpass master password")
+  if (touchIdEnabled()) startSession(vault)
+  return { vault, password, authenticated }
+}
+
+// ─── Touch ID ───────────────────────────────────────────────────────────────
+// A session file (in the workflow's cache folder, readable only by you) records when the vault was last
+// unlocked and used. It holds no secrets: the master password stays in the Keychain. The session ends
+// after the chosen idle time, when the Mac restarts, or with "Lock Vault".
+
+const EACH_COPY_GRACE = 60 // seconds the list stays open after Touch ID in "every copy" mode
+
+function touchIdEnabled() {
+  return config.touchId !== "off" && config.touchId !== ""
+}
+
+function lockAfterSeconds() {
+  if (config.touchId === "each") return EACH_COPY_GRACE
+  if (config.touchId === "restart") return Infinity
+  const minutes = parseInt(config.touchId, 10)
+  return minutes > 0 ? minutes * 60 : 0
+}
+
+function sessionPath() {
+  return config.cacheDir + "/session.json"
+}
+
+function bootTime() {
+  const match = exec("/usr/sbin/sysctl", ["-n", "kern.boottime"]).out.match(/sec = (\d+)/)
+  return match ? match[1] : ""
+}
+
+function sessionValid(vault) {
+  const session = readJSON(sessionPath())
+  if (!session || session.vault !== vault.account || session.boot !== bootTime()) return false
+  const idle = Date.now() / 1000 - Number(session.last)
+  return idle >= 0 && idle <= lockAfterSeconds()
+}
+
+function startSession(vault) {
+  const fm = $.NSFileManager.defaultManager
+  fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(config.cacheDir, true, $({ NSFilePosixPermissions: 0o700 }), null)
+  const data = $(JSON.stringify({ vault: vault.account, boot: bootTime(), last: Math.floor(Date.now() / 1000) }))
+    .dataUsingEncoding($.NSUTF8StringEncoding)
+  fm.createFileAtPathContentsAttributes(sessionPath(), data, $({ NSFilePosixPermissions: 0o600 }))
+}
+
+function endSession() {
+  $.NSFileManager.defaultManager.removeItemAtPathError(sessionPath(), null)
+}
+
+// How this Mac can confirm it's you: "touchid" (Touch ID, with the Mac password as fallback),
+// "password" (Macs without Touch ID, or with the lid closed: the macOS password prompt, or an Apple Watch),
+// or "master" (no login password set, so macOS can't ask: the Enpass master password is asked instead)
+function authMethod() {
+  if (config.dryRun && envVar("enpass_test_authmethod")) return envVar("enpass_test_authmethod")
+  const context = $.LAContext.alloc.init
+  if (context.canEvaluatePolicyError($.LAPolicyDeviceOwnerAuthenticationWithBiometrics, Ref())) return "touchid"
+  if (context.canEvaluatePolicyError($.LAPolicyDeviceOwnerAuthentication, Ref())) return "password"
+  return "master"
+}
+
+function unlockHint() {
+  return { touchid: "↩ Unlock with Touch ID", password: "↩ Unlock with your Mac password" }[authMethod()]
+    || "↩ Unlock with your Enpass master password"
+}
+
+// Confirms it's you with Touch ID or the Mac password, or on Macs where macOS can't ask,
+// with the Enpass master password (checked against the vault). Returns true when confirmed.
+function authenticate(vault) {
+  const method = authMethod()
+  if (method === "master") return confirmMasterPassword(vault)
+  if (config.dryRun) return envVar("enpass_test_touchid", "ok") === "ok"
+  const context = $.LAContext.alloc.init
+  let done = false
+  let confirmed = false
+  context.evaluatePolicyLocalizedReasonReply($.LAPolicyDeviceOwnerAuthentication, "unlock your Enpass vault", (success) => {
+    confirmed = Boolean(success)
+    done = true
+  })
+  const until = Date.now() + 120000
+  while (!done && Date.now() < until) {
+    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1))
+  }
+  if (!done) context.invalidate
+  return confirmed
 }
 
 // ─── Entry helpers ──────────────────────────────────────────────────────────
@@ -539,7 +641,17 @@ function utilityItems(vault) {
     },
   ]
   if (vault) {
-    items.unshift({
+    if (touchIdEnabled()) {
+      items.unshift({
+        title: "Lock Vault",
+        subtitle: "Ask to unlock again next time",
+        match: "lock vault touch id",
+        arg: "lock",
+        icon: { path: "icons/lock.png" },
+        variables: { action: "lock" },
+      })
+    }
+    items.splice(touchIdEnabled() ? 1 : 0, 0, {
       title: "Forget Master Password",
       subtitle: "Remove it from your Keychain. You’ll be asked for it next time",
       match: "lock forget logout sign out master password keychain",
@@ -552,7 +664,7 @@ function utilityItems(vault) {
 }
 
 function setupItem(error) {
-  const icons = { install: "warning", config: "settings", setpassword: "unlock", badpassword: "lock", error: "warning" }
+  const icons = { install: "warning", config: "settings", setpassword: "unlock", badpassword: "lock", locked: "lock", error: "warning" }
   const item = {
     title: error.message,
     subtitle: error.subtitle || "",
@@ -566,6 +678,8 @@ function setupItem(error) {
     item.subtitle = item.subtitle ? item.subtitle : "↩ Open the Workflow’s Configuration"
   } else if (error.kind === "setpassword" || error.kind === "badpassword") {
     Object.assign(item, { valid: true, arg: "setpassword", variables: { action: "setpassword" } })
+  } else if (error.kind === "locked") {
+    Object.assign(item, { valid: true, arg: "touchid", variables: { action: "touchid" } })
   }
   return item
 }
@@ -584,14 +698,14 @@ function listEntries() {
     if (items.length === 0) {
       items.push({ title: "No entries in " + vault.name, subtitle: "Add items in Enpass", valid: false, icon: { path: "icon.png" } })
     }
-    return {
-      items: [...items, ...utilityItems(vault)],
-      // Alfred keeps these rows (titles, usernames, websites; never secrets) in memory for a minute
-      cache: { seconds: 60, loosereload: true },
-    }
+    const output = { items: [...items, ...utilityItems(vault)] }
+    // Alfred keeps these rows (titles, usernames, websites; never secrets) in memory for a minute.
+    // Not with Touch ID: a locked vault must never show cached entries.
+    if (!touchIdEnabled()) output.cache = { seconds: 60, loosereload: true }
+    return output
   } catch (error) {
     if (!(error instanceof SetupError)) throw error
-    if (error.kind === "badpassword") {
+    if (error.kind === "badpassword" || error.kind === "locked") {
       // Recover the vault so "Forget Master Password" stays available
       try { vault = loadVault() } catch (e) { vault = null }
     }
@@ -772,6 +886,12 @@ function totpValue(vault, password, uuid, title, index) {
   return field.totp_code
 }
 
+function confirmMasterPassword(vault) {
+  const password = askPassword("Enter the master password to unlock your “" + vault.name + "” Enpass vault.")
+  if (!password) return false
+  return exec(vault.cli, cliArgs(vault, "dryrun"), { env: { MASTERPW: password }, timeout: CLI_TIMEOUT }).status === 0
+}
+
 // Asks for the master password; in dry-run mode (tests) the answer comes from the environment.
 // Returns null when cancelled.
 function askPassword(message) {
@@ -813,6 +933,8 @@ function setPassword() {
       continue
     }
     if (!savePassword(vault, password)) return notify("Could not save to the Keychain", "The master password was correct but couldn’t be stored")
+    // Typing the master password counts as unlocking
+    if (touchIdEnabled()) startSession(vault)
     reopenSearch()
     return notify("Vault unlocked", "Master password saved in your Keychain")
   }
@@ -840,7 +962,18 @@ function act(input) {
     switch (action) {
       case "setpassword":
         return setPassword()
+      case "touchid": {
+        const vault = loadVault()
+        if (!authenticate(vault)) return notify("Vault still locked", "Unlocking wasn’t confirmed")
+        startSession(vault)
+        reopenSearch()
+        return silent()
+      }
+      case "lock":
+        endSession()
+        return notify("Vault locked", "You’ll be asked to unlock it next time")
       case "forget": {
+        endSession()
         const vault = loadVault()
         return deletePassword(vault)
           ? notify("Master password forgotten", "Removed from your Keychain")
@@ -867,11 +1000,18 @@ function act(input) {
       }
     }
 
-    const { vault, password } = unlock()
+    const { vault, password, authenticated } = unlock({ prompt: true })
+    // "Every copy" mode: secrets always need a fresh Touch ID, even while the list is unlocked
+    const confirmSecret = () => {
+      if (config.touchId === "each" && !authenticated && !authenticate(vault)) {
+        throw new SetupError("error", "Not copied", "Unlocking wasn’t confirmed")
+      }
+    }
     switch (action) {
       case "field": {
         const index = envVar("field_index")
         const type = envVar("field_type")
+        if (SECRET_TYPES.has(type) || envVar("field_secret") === "1") confirmSecret()
         if (type === "totp") return deliver(totpValue(vault, password, uuid, title, index), mode, "one-time code")
         // Non-secret fields come from `list`, so nothing is decrypted for them
         const secret = SECRET_TYPES.has(type) || envVar("field_secret") === "1"

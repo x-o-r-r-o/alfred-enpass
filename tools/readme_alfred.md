@@ -12,6 +12,8 @@ Search your [Enpass](https://www.enpass.io) vault via the `enp` keyword. Type to
 
 In the fields list, <kbd>↩</kbd> copies a field, <kbd>⌘</kbd><kbd>↩</kbd> pastes it and <kbd>⌃</kbd><kbd>↩</kbd> opens a website field. Type `lock` to forget the saved master password.
 
+Turn on Touch ID in the Workflow’s Configuration to lock the vault after a period of inactivity; `enp` then asks for Touch ID (or your Mac password on Macs without it) before showing entries. Type `lock` to lock it right away.
+
 Copied values are hidden from clipboard managers, including Alfred’s Clipboard History, and the clipboard is cleared after 30 seconds unless you copied something else in the meantime.
 
 Alternatively, search Enpass for selected text or a website’s domain via the Universal Action.

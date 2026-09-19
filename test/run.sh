@@ -56,6 +56,7 @@ uuid_of() { # title [username] → uuid from the current list output
 import json,sys; d=json.load(sys.stdin)
 print(next(i['arg'] for i in d['items'] if i['title']==sys.argv[1] and (len(sys.argv)<3 or sys.argv[2] in i['subtitle'])))" "$@"
 }
+setclip() { osascript -l JavaScript -e 'function run(argv) { ObjC.import("AppKit"); const p = $.NSPasteboard.generalPasteboard; p.clearContents; p.setStringForType($(argv[0]), $.NSPasteboardTypeString) }' "$1" >/dev/null; }
 clip() { osascript -l JavaScript -e 'ObjC.import("AppKit"); $.NSPasteboard.generalPasteboard.stringForType($.NSPasteboardTypeString).js || ""'; }
 clip_types() { osascript -l JavaScript -e 'ObjC.import("AppKit"); ObjC.deepUnwrap($.NSPasteboard.generalPasteboard.types).join(",")'; }
 totp_now() { python3 -c "
@@ -222,13 +223,66 @@ check "search, configure, open, back" "$(for a in search configure open_enpass b
 check "unknown action" "$(action=bogus act)" "d['alfredworkflow']['variables']['notif_title']=='Unknown action'"
 check "unknown mode" "$(./enpass.js bogus)" "d['items'][0]['valid']==False"
 
+print "── Touch ID / auto-lock"
+store_pw "$VAULT_ACCOUNT" "$PW"
+export alfred_workflow_cache="$TMP/cache"
+SESSION="$alfred_workflow_cache/session.json"
+BOOT="$(sysctl -n kern.boottime | sed -E 's/^\{ sec = ([0-9]+),.*/\1/')"
+write_session() { # vault_account seconds_ago [boot]
+  mkdir -p "$alfred_workflow_cache"
+  print -r -- "{\"vault\":\"$1\",\"boot\":\"${3:-$BOOT}\",\"last\":$(( $(date +%s) - $2 ))}" > "$SESSION"
+}
+tid() { touch_id=1 auto_lock="${AUTO_LOCK:-15}" "$@"; }
+rm -f "$SESSION"
+L="$(tid ./enpass.js list '')"
+check "locked: no entries, unlock row" "$L" "d['items'][0]['title']=='DummyVault vault is locked' and d['items'][0]['subtitle']=='↩ Unlock with Touch ID' and d['items'][0]['variables']['action']=='touchid' and not any('uid' in i for i in d['items']) and 'cache' not in d"
+check_sh "locked output has no secrets" "no_secrets \"\$L\""
+check "locked: Lock and Forget rows" "$L" "[i['title'] for i in d['items'][1:3]]==['Lock Vault','Forget Master Password']"
+check "hint without Touch ID" "$(enpass_test_authmethod=password tid ./enpass.js list '')" "d['items'][0]['subtitle']=='↩ Unlock with your Mac password'"
+check "hint without any macOS auth" "$(enpass_test_authmethod=master tid ./enpass.js list '')" "d['items'][0]['subtitle']=='↩ Unlock with your Enpass master password'"
+check "locked fields view" "$(tid ./enpass.js fields '')" "d['items'][0]['title']=='DummyVault vault is locked'"
+check "Touch ID refused" "$(enpass_test_touchid=fail action=touchid tid ./enpass.js act)" "d['alfredworkflow']['variables']['notif_title']=='Vault still locked'"
+check_sh "…no session created" "[[ ! -e \$SESSION ]]"
+check "Touch ID confirmed" "$(action=touchid tid ./enpass.js act)" "d['alfredworkflow']['arg']==''"
+check_sh "session file private (600) and secret-free" "[[ \$(stat -f %Lp \$SESSION) == 600 ]] && no_secrets \"\$(cat \$SESSION)\""
+check "unlocked: entries listed, never cached" "$(tid ./enpass.js list '')" "sum('uid' in i for i in d['items'])==13 and 'cache' not in d and d['items'][-4]['title']=='Lock Vault'"
+write_session "$VAULT_ACCOUNT" 960
+check "auto-lock after 15 min idle" "$(tid ./enpass.js list '')" "d['items'][0]['title']=='DummyVault vault is locked'"
+check "…still unlocked with 1 hour" "$(AUTO_LOCK=60 tid ./enpass.js list '')" "sum('uid' in i for i in d['items'])==13"
+write_session "$VAULT_ACCOUNT" 120
+check "auto-lock after 1 min" "$(AUTO_LOCK=1 tid ./enpass.js list '')" "d['items'][0]['title']=='DummyVault vault is locked'"
+write_session "$VAULT_ACCOUNT" 999999
+check "lock only on restart: old session valid" "$(AUTO_LOCK=restart tid ./enpass.js list '')" "sum('uid' in i for i in d['items'])==13"
+write_session "$VAULT_ACCOUNT" 10 12345
+check "restart locks the vault" "$(AUTO_LOCK=restart tid ./enpass.js list '')" "d['items'][0]['title']=='DummyVault vault is locked'"
+write_session "other-vault" 10
+check "session of another vault doesn't count" "$(tid ./enpass.js list '')" "d['items'][0]['title']=='DummyVault vault is locked'"
+rm -f "$SESSION"; setclip "before"
+check "copy while locked, Touch ID refused" "$(enpass_test_touchid=fail tid field $GH GitHub 0 password)" "d['alfredworkflow']['variables']['notif_title']=='Vault still locked'"
+check_sh "…clipboard untouched" "[[ \$(clip) == before ]]"
+check "copy while locked, Touch ID confirmed" "$(tid field $GH GitHub 0 password)" "d['alfredworkflow']['variables']['notif_title']=='Copied password'"
+check_sh "…copied and unlocked" "[[ \$(clip) == 'gh-P@ss w0rd!' && -e \$SESSION ]]"
+check "every copy: secret needs Touch ID again" "$(AUTO_LOCK=each enpass_test_touchid=fail tid field $GH GitHub 0 password)" "d['alfredworkflow']['variables']['notif_title']=='Not copied'"
+check "every copy: username doesn't" "$(AUTO_LOCK=each enpass_test_touchid=fail tid env entry_uuid=$GH entry_title=GitHub action=username ./enpass.js act)" "d['alfredworkflow']['variables']['notif_title']=='Copied username'"
+check "every copy: secret with Touch ID" "$(AUTO_LOCK=each tid field $GH GitHub 0 password)" "d['alfredworkflow']['variables']['notif_title']=='Copied password'"
+check "lock vault" "$(action=lock tid ./enpass.js act)" "d['alfredworkflow']['variables']['notif_title']=='Vault locked'"
+check_sh "…session removed" "[[ ! -e \$SESSION ]]"
+check "no macOS auth: master password unlocks" "$(enpass_test_authmethod=master enpass_test_answer=$PW action=touchid tid ./enpass.js act)" "d['alfredworkflow']['arg']=='' and __import__('os').path.exists('$SESSION')"
+rm -f "$SESSION"
+check "no macOS auth: wrong master password" "$(enpass_test_authmethod=master enpass_test_answer=wrong action=touchid tid ./enpass.js act)" "d['alfredworkflow']['variables']['notif_title']=='Vault still locked'"
+check "typing the master password unlocks" "$(enpass_test_answer=$PW action=setpassword tid ./enpass.js act)" "d['alfredworkflow']['variables']['notif_title']=='Vault unlocked'"
+check_sh "…session started" "[[ -e \$SESSION ]]"
+check "forget also locks" "$(action=forget tid ./enpass.js act)" "d['alfredworkflow']['variables']['notif_title']=='Master password forgotten'"
+check_sh "…session removed" "[[ ! -e \$SESSION ]]"
+store_pw "$VAULT_ACCOUNT" "$PW"
+check_sh "Touch ID off: no session file used" "./enpass.js list '' >/dev/null; [[ ! -e \$SESSION ]]"
+
 print "── Workflow wiring (info.plist)"
 PLIST="$(plutil -convert json -o - info.plist)"
 check "every modifier has a connection from both Script Filters" "$PLIST" "(lambda t, c: all(sorted(x['modifiers'] for x in c[u])==[0,131072,262144,524288,1048576,8388608] for u,ty in t.items() if ty=='alfred.workflow.input.scriptfilter'))({o['uid']:o['type'] for o in d['objects']}, d['connections'])"
-check "config fields" "$PLIST" "[c['variable'] for c in d['userconfigurationconfig']]==['keyword','vault_path','keyfile_path','default_action','clear_after','show_trashed','enpass_cli'] and d['userconfigurationconfig'][0]['config']['default']=='enp'"
+check "config fields" "$PLIST" "[c['variable'] for c in d['userconfigurationconfig']]==['keyword','vault_path','keyfile_path','default_action','clear_after','touch_id','auto_lock','show_trashed','enpass_cli'] and d['userconfigurationconfig'][0]['config']['default']=='enp'"
 
 print "── Clipboard clearing"
-setclip() { osascript -l JavaScript -e 'function run(argv) { ObjC.import("AppKit"); const p = $.NSPasteboard.generalPasteboard; p.clearContents; p.setStringForType($(argv[0]), $.NSPasteboardTypeString) }' "$1" >/dev/null; }
 setclip "keep me"
 count_now="$(osascript -l JavaScript -e 'ObjC.import("AppKit"); $.NSPasteboard.generalPasteboard.changeCount')"
 ./enpass.js clear $((count_now - 1))

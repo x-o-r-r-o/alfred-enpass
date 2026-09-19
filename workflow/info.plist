@@ -514,6 +514,8 @@ Search your [Enpass](https://www.enpass.io) vault via the `enp` keyword. Type to
 
 In the fields list, &lt;kbd&gt;↩&lt;/kbd&gt; copies a field, &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↩&lt;/kbd&gt; pastes it and &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;↩&lt;/kbd&gt; opens a website field. Type `lock` to forget the saved master password.
 
+Turn on Touch ID in the Workflow’s Configuration to lock the vault after a period of inactivity; `enp` then asks for Touch ID (or your Mac password on Macs without it) before showing entries. Type `lock` to lock it right away.
+
 Copied values are hidden from clipboard managers, including Alfred’s Clipboard History, and the clipboard is cleared after 30 seconds unless you copied something else in the meantime.
 
 Alternatively, search Enpass for selected text or a website’s domain via the Universal Action.
@@ -743,6 +745,75 @@ The vault is read with [enpass-cli](https://github.com/hazcod/enpass-cli) and ne
 				<key>required</key>
 				<false/>
 				<key>text</key>
+				<string>Require Touch ID or your Mac password to unlock</string>
+			</dict>
+			<key>description</key>
+			<string>Macs without Touch ID ask for your Mac password instead. The master password is still needed once.</string>
+			<key>label</key>
+			<string>Touch ID</string>
+			<key>type</key>
+			<string>checkbox</string>
+			<key>variable</key>
+			<string>touch_id</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string>15</string>
+				<key>pairs</key>
+				<array>
+					<array>
+						<string>For every copy</string>
+						<string>each</string>
+					</array>
+					<array>
+						<string>After 1 minute</string>
+						<string>1</string>
+					</array>
+					<array>
+						<string>After 5 minutes</string>
+						<string>5</string>
+					</array>
+					<array>
+						<string>After 15 minutes</string>
+						<string>15</string>
+					</array>
+					<array>
+						<string>After 30 minutes</string>
+						<string>30</string>
+					</array>
+					<array>
+						<string>After 1 hour</string>
+						<string>60</string>
+					</array>
+					<array>
+						<string>After 4 hours</string>
+						<string>240</string>
+					</array>
+					<array>
+						<string>When the Mac restarts</string>
+						<string>restart</string>
+					</array>
+				</array>
+			</dict>
+			<key>description</key>
+			<string>When Touch ID is on: lock the vault again after this much inactivity.</string>
+			<key>label</key>
+			<string>Auto-Lock</string>
+			<key>type</key>
+			<string>popupbutton</string>
+			<key>variable</key>
+			<string>auto_lock</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<false/>
+				<key>required</key>
+				<false/>
+				<key>text</key>
 				<string>Include entries in the Enpass trash</string>
 			</dict>
 			<key>description</key>
@@ -779,7 +850,7 @@ The vault is read with [enpass-cli](https://github.com/hazcod/enpass-cli) and ne
 	<key>variablesdontexport</key>
 	<array/>
 	<key>version</key>
-	<string>1.0.1</string>
+	<string>1.1.0</string>
 	<key>webaddress</key>
 	<string>https://github.com/x-o-r-r-o/alfred-enpass</string>
 </dict>

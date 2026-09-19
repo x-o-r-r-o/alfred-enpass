@@ -30,6 +30,12 @@ Search your Enpass vault via the `enp` keyword. Type to filter by title, usernam
 
 ![All fields of an entry](images/fields.png)
 
+### Touch ID
+
+Turn on **Touch ID** in the Workflow’s Configuration and choose when the vault locks again (**Auto-Lock**): after every copy, after 1 minute to 4 hours of inactivity, or only when the Mac restarts. While locked, `enp` shows **Unlock with Touch ID** instead of your entries, and a copy asks for Touch ID first. Type `lock` and pick **Lock Vault** to lock it right away.
+
+Macs without Touch ID (or with the lid closed) ask for your Mac password instead, and an Apple Watch can confirm too. On a Mac without a login password, where macOS can’t ask, the Enpass master password is asked. The master password is still needed once, the first time.
+
 In the fields list, <kbd>↩</kbd> copies a field, <kbd>⌘</kbd><kbd>↩</kbd> pastes it and <kbd>⌃</kbd><kbd>↩</kbd> opens a website field. Type `lock` to forget the saved master password.
 
 Alternatively, search Enpass for selected text or a website’s domain via the Universal Action.
@@ -47,6 +53,8 @@ The first search asks for your master password. It is checked against the vault 
 | Keyfile | — | Only for vaults protected with a keyfile |
 | Action | Copy | Copy or paste on <kbd>↩</kbd> |
 | Clear Clipboard | 30 seconds | 10–90 seconds or never |
+| Touch ID | Off | Require Touch ID (or your Mac password) to unlock the vault |
+| Auto-Lock | 15 minutes | With Touch ID: every copy, 1 minute – 4 hours of inactivity, or when the Mac restarts |
 | Trash | Off | Include entries in the Enpass trash |
 | enpass-cli Path | auto | Found in `/opt/homebrew/bin` or `/usr/local/bin` |
 
@@ -59,6 +67,7 @@ To use more than one vault, duplicate the workflow in Alfred and point each copy
 * **Search results never contain secrets.** Passwords and codes are read only when you pick an action, and go straight to the clipboard without passing through Alfred.
 * **Clipboard.** Copied values are marked as concealed and transient ([nspasteboard.org](http://nspasteboard.org)), so Alfred’s Clipboard History and other clipboard managers skip them. The clipboard is cleared after the configured delay — unless you copied something else in the meantime.
 * While enpass-cli runs (well under a second), the master password is in its environment, which other programs running as your user could read. enpass-cli has no other way to receive it without a prompt.
+* **Touch ID** stops anyone using your unlocked Mac from opening the vault through Alfred. The unlock state is a small file in the workflow’s cache folder, readable only by you, holding no secrets, and it ends after the Auto-Lock time or a restart. Search results are never cached while Touch ID is on. It doesn’t protect against malicious software running as you (see the next point).
 * The Keychain item is created with Apple’s `security` tool, so while your login keychain is unlocked, any program running as your user can read it through that tool without a prompt. This is the same trust model as other password-manager workflows; don’t use it on a Mac you share an account on.
 * Copied values stay on this Mac: they’re kept off Universal Clipboard. Only `http` and `https` websites are opened, and logins inside website addresses are never displayed.
 * Notifications never name the entry, and only the entries that match are decrypted — never the whole vault.
