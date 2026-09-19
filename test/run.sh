@@ -109,7 +109,7 @@ security delete-generic-password -s "$SERVICE-canary" >/dev/null 2>&1
 
 print "── Listing"
 LIST="$(list '')"
-check "lists entries sorted, no trashed/deleted" "$LIST" "[i['title'] for i in d['items'] if 'uid' in i]==['A very long title that goes on and on to check that Alfred truncates it gracefully without breaking anything at all','Bank of Ümlaut 🏦','GitHub','GitHub','Leading-Space Password','Only Password','Quote \"Test\" \\\\ back \$HOME \`x\`','Unflagged Secrets','Visa Card','Whatever','Wi-Fi Home']"
+check "lists entries sorted, no trashed/deleted" "$LIST" "[i['title'] for i in d['items'] if 'uid' in i]==['A very long title that goes on and on to check that Alfred truncates it gracefully without breaking anything at all','ÄÖÜ','Bank of Ümlaut 🏦','GitHub','GitHub','Leading-Space Password','Only Password','Quote \"Test\" \\\\ back \$HOME \`x\`','Unflagged Secrets','Visa Card','Whatever','Wi-Fi Home','日本銀行']"
 check "utility rows" "$LIST" "[i['title'] for i in d['items'][-3:]]==['Forget Master Password','Open Enpass','Workflow Configuration']"
 check "cached, not skipknowledge" "$LIST" "d['cache']=={'seconds':60,'loosereload':True} and 'skipknowledge' not in d"
 check_sh "list output has no secrets" "no_secrets \"\$LIST\""
@@ -125,10 +125,10 @@ check "show trashed" "$(show_trashed=1 list '')" "(lambda i: i['subtitle'].start
 store_pw "00000000-0000-4000-8000-000000000000" "$PW"
 check "empty vault" "$(vault_path=$FIX/vault-empty list '')" "d['items'][0]['title']=='No entries in EmptyVault' and d['items'][0]['valid']==False"
 store_pw "$KF_ACCOUNT" "$PW"
-check "keyfile vault lists" "$(vault_path=$FIX/vault-keyfile keyfile_path=$FIX/test.enpasskey list '')" "sum('uid' in i for i in d['items'])==11"
+check "keyfile vault lists" "$(vault_path=$FIX/vault-keyfile keyfile_path=$FIX/test.enpasskey list '')" "sum('uid' in i for i in d['items'])==13"
 check "keyfile vault, wrong keyfile" "$(vault_path=$FIX/vault-keyfile keyfile_path=$FIX/vault/vault.json list '')" "d['items'][0]['title'] in ('Could not read the keyfile','Keyfile problem','Wrong master password or keyfile')"
-check "keyfile set but not needed is ignored" "$(keyfile_path=$FIX/test.enpasskey list '')" "sum('uid' in i for i in d['items'])==11"
-check "custom cli path" "$(enpass_cli=$(command -v enpass-cli) list '')" "sum('uid' in i for i in d['items'])==11"
+check "keyfile set but not needed is ignored" "$(keyfile_path=$FIX/test.enpasskey list '')" "sum('uid' in i for i in d['items'])==13"
+check "custom cli path" "$(enpass_cli=$(command -v enpass-cli) list '')" "sum('uid' in i for i in d['items'])==13"
 
 print "── Fields"
 GH="$(uuid_of GitHub alice)"; BOB="$(uuid_of GitHub bob)"; CARD="$(uuid_of 'Visa Card')"
@@ -137,7 +137,7 @@ LEAD="$(uuid_of Leading-Space\ Password)"; WIFI="$(uuid_of 'Wi-Fi Home')"; ONLY=
 F="$(fields $GH GitHub)"
 check "fields of GitHub (alice)" "$F" "[(i['title'],i['subtitle']) for i in d['items']]==[('Password','••••••••'),('Username','alice@example.com'),('Website','https://github.com/login'),('One-time code','Current code'),('Recovery PIN','Recovery › ••••••••'),('Docs','Recovery › https://docs.github.com'),('Back to Search','Return to all entries')]"
 check_sh "fields output has no secrets" "no_secrets \"\$F\""
-check "field rows carry index, type and label" "$F" "d['items'][3]['variables']=={'entry_uuid':'$GH','entry_title':'GitHub','action':'field','field_index':'3','field_type':'totp','field_label':'One-time code','mode':'copy'}"
+check "field rows carry index, type and label" "$F" "d['items'][3]['variables']=={'entry_uuid':'$GH','entry_title':'GitHub','action':'field','field_index':'3','field_type':'totp','field_label':'One-time code','field_secret':'1','mode':'copy'}"
 check "website field opens with ctrl" "$F" "d['items'][5]['mods']['ctrl']['valid'] and d['items'][5]['mods']['ctrl']['variables']['action']=='open_field' and not d['items'][0]['mods']['ctrl']['valid']"
 check "fields of duplicate-title entry" "$(fields $BOB GitHub)" "d['items'][1]['subtitle']=='bob@work.example'"
 check "fields with sections (Whatever)" "$(fields $(uuid_of Whatever) Whatever)" "any(i['subtitle']=='OUTGOING › smtp.whatever.com' for i in d['items']) and any(i['title']=='Email' for i in d['items'])"
@@ -155,13 +155,36 @@ check "only web addresses can be opened" "$F2" "[i['mods']['ctrl']['valid'] for 
 
 print "── Copying"
 field() { entry_uuid="$1" entry_title="$2" action=field field_index="$3" field_type="$4" mode="${5:-copy}" act; }
-check "copy password" "$(field $GH GitHub 0 password)" "d['alfredworkflow']['variables']['notif_title']=='Copied password' and d['alfredworkflow']['arg']=='GitHub.'"
+check "copy password" "$(field $GH GitHub 0 password)" "d['alfredworkflow']['variables']['notif_title']=='Copied password' and d['alfredworkflow']['arg']=='Clipboard won’t be cleared automatically.'"
 check_sh "clipboard has password" "[[ \$(clip) == 'gh-P@ss w0rd!' ]]"
 check_sh "clipboard marked concealed+transient" "[[ \$(clip_types) == *org.nspasteboard.ConcealedType*org.nspasteboard.TransientType* ]]"
 field $BOB GitHub 0 password >/dev/null
 check_sh "duplicate title copies the right one" "[[ \$(clip) == 'second-github' ]]"
-field $UML 'Bank of Ümlaut 🏦' 0 password >/dev/null
+TRACE="$TMP/cli-calls"; : > "$TRACE"
+printf '#!/bin/zsh\nprint -r -- "${(j: :)@}" >> %s\nexec %s "$@"\n' "$TRACE" "$(command -v enpass-cli)" > "$TMP/enpass-cli"
+chmod +x "$TMP/enpass-cli"
+enpass_cli="$TMP/enpass-cli" field $UML 'Bank of Ümlaut 🏦' 0 password >/dev/null
 check_sh "unicode password" "[[ \$(clip) == 'ünïcødé-🔑-pässwörd' ]]"
+check_sh "non-ASCII title: show runs with a filter only" "! grep -qE ' show\$' \"\$TRACE\" && grep -q ' show mlaut 🏦' \"\$TRACE\""
+enpass_cli="$TMP/enpass-cli" field $GH 'Renamed Title' 0 password >/dev/null
+check_sh "renamed entry: found without decrypting the whole vault" "! grep -qE ' show\$' \"\$TRACE\""
+: > "$TRACE"
+enpass_cli="$TMP/enpass-cli" entry_uuid=$GH entry_title=GitHub action=field field_index=1 field_type=username field_label=Username field_secret=0 act >/dev/null
+check_sh "non-secret field copied without decrypting" "! grep -q ' show ' \"\$TRACE\" && [[ \$(clip) == alice@example.com ]]"
+: > "$TRACE"
+enpass_cli="$TMP/enpass-cli" entry_uuid=$GH entry_title=GitHub action=username act >/dev/null
+check_sh "username copied without decrypting" "! grep -q ' show ' \"\$TRACE\""
+CJK="$(uuid_of 日本銀行)"; UNS="$(uuid_of ÄÖÜ)"
+: > "$TRACE"
+enpass_cli="$TMP/enpass-cli" field $CJK 日本銀行 0 password >/dev/null
+check_sh "CJK title: filtered copy" "[[ \$(clip) == cjk-pass ]] && ! grep -qE ' show\$' \"\$TRACE\""
+: > "$TRACE"
+check "unsearchable title is refused, not whole-vault decrypted" "$(enpass_cli=$TMP/enpass-cli field $UNS ÄÖÜ 0 password)" "d['alfredworkflow']['variables']['notif_title']=='Can’t read this entry from Alfred'"
+check_sh "…and no unfiltered show ran" "! grep -qE ' show\$' \"\$TRACE\""
+printf '#!/bin/zsh\nsleep 20\n' > "$TMP/slow-cli"; chmod +x "$TMP/slow-cli"
+started=$SECONDS
+check "stuck enpass-cli is stopped" "$(enpass_test_timeout=1 enpass_cli=$TMP/slow-cli list '')" "d['items'][0]['title']=='enpass-cli took too long'"
+check_sh "…within the timeout, children included" "(( SECONDS - started < 8 ))"
 field $QUOTE 'Quote "Test" \ back $HOME `x`' 0 password >/dev/null
 check_sh "shell-hostile password" "[[ \$(clip) == 'a\"b\\c\$d\`e'\"'\"'f;g|h&i' ]]"
 field $LEAD 'Leading-Space Password' 0 password >/dev/null
@@ -175,10 +198,10 @@ check_sh "custom sensitive field" "[[ \$(clip) == 8472 ]]"
 field $GH GitHub 6 url >/dev/null
 check_sh "non-sensitive field" "[[ \$(clip) == https://docs.github.com ]]"
 check "paste mode notification" "$(field $GH GitHub 0 password paste)" "d['alfredworkflow']['variables']['notif_title']=='Pasted password'"
-check "clear timer text" "$(clear_after=30 field $ONLY 'Only Password' 0 password)" "d['alfredworkflow']['arg']=='Only Password. Clipboard clears in 30 s.'"
-check "username" "$(entry_uuid=$GH entry_title=GitHub action=username act)" "d['alfredworkflow']['variables']['notif_title']=='Copied username'"
+check "clear timer text" "$(clear_after=30 field $ONLY 'Only Password' 0 password)" "d['alfredworkflow']['arg']=='Clipboard clears in 30 s.' and 'Only' not in json.dumps(d)"
+check "username" "$(entry_uuid=$GH entry_title=GitHub action=username act)" "d['alfredworkflow']['variables']['notif_title']=='Copied username' and 'GitHub' not in json.dumps(d)"
 check_sh "clipboard has username" "[[ \$(clip) == alice@example.com ]]"
-check "username missing" "$(entry_uuid=$ONLY entry_title='Only Password' action=username act)" "d['alfredworkflow']['variables']['notif_title']=='No username'"
+check "username missing (no title in notification)" "$(entry_uuid=$ONLY entry_title='Only Password' action=username act)" "d['alfredworkflow']['variables']['notif_title']=='No username' and 'Only' not in json.dumps(d)"
 check "one-time code" "$(field $GH GitHub 3 totp)" "d['alfredworkflow']['variables']['notif_title']=='Copied one-time code'"
 check_sh "TOTP matches RFC 6238" "[[ \$(clip) == \$(totp_now) ]]"
 check "invalid TOTP secret" "$(field $BOB GitHub 3 totp)" "d['alfredworkflow']['variables']['notif_title']=='Could not generate the one-time code'"

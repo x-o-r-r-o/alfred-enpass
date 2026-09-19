@@ -49,6 +49,8 @@ cli -title "Trashed Entry" -login "trash@example.com" -password "trash-pw" -cate
 cli -title "Wi-Fi Home" -password "wifi pass with  two spaces " -category wifi create
 cli -title "Leading-Space Password" -login "space@example.com" -password " padded " -category login create
 cli -title "A very long title that goes on and on to check that Alfred truncates it gracefully without breaking anything at all" -login "long@example.com" -password "long-pw" -url "https://long.example.com" create
+cli -title "日本銀行" -password "cjk-pass" -category finance create
+cli -title "ÄÖÜ" -password "unsearchable-pass" -category login create
 cli trash "Trashed Entry"
 
 # Extra fields enpass-cli can't create

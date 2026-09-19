@@ -58,11 +58,14 @@ To use more than one vault, duplicate the workflow in Alfred and point each copy
 * **Master password** is kept in your login Keychain (service `com.x-o-r-r-o.alfred.enpass`, shown as “Enpass for Alfred” in Keychain Access). It reaches enpass-cli only through its environment, never its command line. Type `lock` in the search to remove it.
 * **Search results never contain secrets.** Passwords and codes are read only when you pick an action, and go straight to the clipboard without passing through Alfred.
 * **Clipboard.** Copied values are marked as concealed and transient ([nspasteboard.org](http://nspasteboard.org)), so Alfred’s Clipboard History and other clipboard managers skip them. The clipboard is cleared after the configured delay — unless you copied something else in the meantime.
+* While enpass-cli runs (well under a second), the master password is in its environment, which other programs running as your user could read. enpass-cli has no other way to receive it without a prompt.
 * The Keychain item is created with Apple’s `security` tool, so while your login keychain is unlocked, any program running as your user can read it through that tool without a prompt. This is the same trust model as other password-manager workflows; don’t use it on a Mac you share an account on.
-* Copied values stay on this Mac: they’re kept off Universal Clipboard. Only `http` and `https` websites are opened.
+* Copied values stay on this Mac: they’re kept off Universal Clipboard. Only `http` and `https` websites are opened, and logins inside website addresses are never displayed.
+* Notifications never name the entry, and only the entries that match are decrypted — never the whole vault.
 
 ## Limitations
 
+* Entries whose title and username consist only of accented or other non-English capital-case letters (e.g. “ÄÖÜ”) can’t be copied from Alfred, because enpass-cli can’t search for them without decrypting the whole vault.
 * Entries with no fields at all (for example a secure note with only note text) aren’t listed; enpass-cli skips them.
 * Archived entries are listed like any other.
 * Relies on enpass-cli following changes to the Enpass vault format.

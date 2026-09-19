@@ -16,7 +16,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / "workflow"
 DIST = ROOT / "dist"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 BUNDLE_ID = "com.x-o-r-r-o.alfred.enpass"
 PACKAGE = "Enpass.alfredworkflow"
 # Only these files are shipped; anything else in workflow/ (e.g. prefs.plist) stays local

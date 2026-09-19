@@ -94,6 +94,8 @@ const config = {
   keychainService: envVar("enpass_keychain_service", ""),
   dryRun: envVar("enpass_dry_run", "0") === "1",
 }
+// Seconds before a stuck enpass-cli is stopped
+const CLI_TIMEOUT = config.dryRun && envVar("enpass_test_timeout") ? Number(envVar("enpass_test_timeout")) : 30
 const CLI_CANDIDATES = config.dryRun && envVar("enpass_test_candidates")
   ? envVar("enpass_test_candidates").split(":")
   : DEFAULT_CLI_CANDIDATES
@@ -102,7 +104,7 @@ const CLI_CANDIDATES = config.dryRun && envVar("enpass_test_candidates")
 
 // Runs an executable with an argument array (no shell). Extra environment variables are only
 // visible to the child process. Returns { status, out, err }.
-function exec(path, args, { input, env } = {}) {
+function exec(path, args, { input, env, timeout } = {}) {
   const task = $.NSTask.alloc.init
   task.executableURL = $.NSURL.fileURLWithPath(path)
   task.arguments = $(args)
@@ -128,16 +130,32 @@ function exec(path, args, { input, env } = {}) {
     const reason = error[0] && !error[0].isNil() ? error[0].localizedDescription.js : ""
     return { status: -1, out: "", err: reason || "Could not start " + path }
   }
+  // Watchdog: stops the child and anything it started (its process group) if it runs too long,
+  // since reading stdout below blocks until every process holding the pipe has exited
+  let watchdog = null
+  if (timeout) {
+    watchdog = $.NSTask.alloc.init
+    watchdog.executableURL = $.NSURL.fileURLWithPath("/bin/sh")
+    // On TERM (child finished in time) it also stops its sleep, so nothing is left running
+    watchdog.arguments = $(["-c", 'trap \'kill "$s" 2>/dev/null; exit 0\' TERM; sleep "$1" & s=$!; wait "$s" && { kill -9 -- "-$2" || kill -9 "$2"; } 2>/dev/null',
+      "sh", String(timeout), String(task.processIdentifier)])
+    watchdog.standardOutput = $.NSFileHandle.fileHandleWithNullDevice
+    watchdog.standardError = $.NSFileHandle.fileHandleWithNullDevice
+    if (!watchdog.launchAndReturnError(Ref())) watchdog = null
+  }
   if (input !== undefined) stdin.fileHandleForWriting.writeData($(input).dataUsingEncoding($.NSUTF8StringEncoding))
   stdin.fileHandleForWriting.closeFile
   const outData = stdout.fileHandleForReading.readDataToEndOfFile
   task.waitUntilExit
+  if (watchdog && watchdog.running) watchdog.terminate
+  const timedOut = Boolean(timeout) && task.terminationReason === $.NSTaskTerminationReasonUncaughtSignal && task.terminationStatus === 9
   if (!errHandle.isNil()) errHandle.closeFile
   const errData = $.NSData.dataWithContentsOfFile(errPath)
   fm.removeItemAtPathError(errPath, null)
   return {
     status: task.terminationStatus,
-    out: $.NSString.alloc.initWithDataEncoding(outData, $.NSUTF8StringEncoding).js || "",
+    timedOut,
+    out: timedOut ? "" : $.NSString.alloc.initWithDataEncoding(outData, $.NSUTF8StringEncoding).js || "",
     err: errData.isNil() ? "" : $.NSString.alloc.initWithDataEncoding(errData, $.NSUTF8StringEncoding).js || "",
   }
 }
@@ -211,8 +229,8 @@ function loadVault() {
   }
   return {
     cli,
-    name: info.vault_name || "Enpass",
-    account: info.vault_uuid || config.vaultPath,
+    name: String(info.vault_name || "Enpass"),
+    account: String(info.vault_uuid || config.vaultPath),
     // enpass-cli refuses a keyfile the vault doesn't use, so only pass it when needed
     keyfile: needsKeyfile ? config.keyfilePath : "",
   }
@@ -229,11 +247,19 @@ function cliArgs(vault, command, filters = []) {
 
 // Runs enpass-cli with the master password in its environment and returns the parsed entries
 function runCli(vault, password, command, filters = []) {
-  const result = exec(vault.cli, cliArgs(vault, command, filters), { env: { MASTERPW: password } })
+  const result = exec(vault.cli, cliArgs(vault, command, filters), { env: { MASTERPW: password }, timeout: CLI_TIMEOUT })
+  if (result.timedOut) throw new SetupError("error", "enpass-cli took too long", "Try again, or check that the vault isn’t locked by another app")
   if (result.status === 0) {
     try {
       const entries = JSON.parse(result.out || "[]")
-      return Array.isArray(entries) ? entries : []
+      if (!Array.isArray(entries)) return []
+      // Normalise what the rest of the script relies on
+      return entries.filter((e) => e && typeof e.uuid === "string").map((e) => ({
+        ...e,
+        title: String(e.title || ""),
+        subtitle: String(e.subtitle || ""),
+        fields: (Array.isArray(e.fields) ? e.fields : []).map((f) => ({ ...f, type: String(f.type || "text"), label: String(f.label || ""), value: f.value === undefined ? undefined : String(f.value) })),
+      }))
     } catch (e) {
       throw new SetupError("error", "Unexpected output from enpass-cli", "Try updating it: brew upgrade enpass-cli")
     }
@@ -340,10 +366,14 @@ function usernameOf(entry) {
 }
 
 // The field ↩ copies: the first password, otherwise the first sensitive field (e.g. a card number)
+function isMetadata(field) {
+  return field.type.startsWith(".")
+}
+
 function primaryFieldIndex(entry) {
   const password = entry.fields.findIndex((f) => f.type === "password")
   if (password >= 0) return password
-  return entry.fields.findIndex((f) => isSecret(f) && f.type !== "totp")
+  return entry.fields.findIndex((f) => isSecret(f) && f.type !== "totp" && !isMetadata(f))
 }
 
 function totpFieldIndex(entry) {
@@ -363,6 +393,16 @@ function normalizeURL(value) {
   if (/^https?:\/\//i.test(url)) return url
   if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[^:/]+:\d+(\/|$)/.test(url)) return ""
   return "https://" + url
+}
+
+// For display only: scheme, host and path, without a login ("user:pass@") or query string
+function displayURL(url) {
+  const match = url.match(/^([a-z][a-z0-9+.-]*:\/\/)(?:[^@/?#]*@)?([^?#]*)/i)
+  return match ? match[1] + match[2] : ""
+}
+
+function hasCredentials(url) {
+  return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(url)
 }
 
 function hostOf(url) {
@@ -388,11 +428,42 @@ function otherMode(mode) {
   return mode === "paste" ? "copy" : "paste"
 }
 
-// Title filter for enpass-cli (substring of title or username), then exact match on UUID
+// enpass-cli matches filters case-insensitively against title and username with SQLite's lower(),
+// which only folds ASCII. So filter on the longest plain ASCII word, e.g. "Bank" from "Bank of Ümlaut 🏦".
+// Characters SQLite's lower() and enpass-cli's Go lowercasing agree on: ASCII, and characters without
+// case (digits, CJK, emoji…). Returns the longest run of them, e.g. "mlaut 🏦" from "Bank of Ümlaut 🏦".
+function filterTerm(text) {
+  const runs = Array.from(text || "")
+    .map((c) => (c.charCodeAt(0) < 128 || c.toLowerCase() === c.toUpperCase() ? c : "\n"))
+    .join("")
+    .split("\n")
+    .map((run) => run.trim())
+    .filter(Boolean)
+  return runs.sort((a, b) => b.length - a.length)[0] || ""
+}
+
+// Finds an entry by UUID while decrypting as little as possible: `show` (which decrypts secrets)
+// only ever runs with a filter, unless the entry has no plain ASCII word in its title or username.
 function findEntry(vault, password, uuid, title, command) {
-  const entries = runCli(vault, password, command, title ? [title] : [])
-  let entry = entries.find((e) => e.uuid === uuid)
-  if (!entry && title) entry = runCli(vault, password, command).find((e) => e.uuid === uuid)
+  const found = (entries) => entries.find((e) => e.uuid === uuid)
+  const tried = new Set()
+  const attempt = (term) => {
+    if (!term || tried.has(term.toLowerCase())) return null
+    tried.add(term.toLowerCase())
+    return found(runCli(vault, password, command, [term]))
+  }
+  let entry = attempt(filterTerm(title))
+  if (!entry) {
+    // Look the entry up without secrets to learn its current title and username (it may have been renamed)
+    const listed = found(runCli(vault, password, "list"))
+    if (!listed) throw new SetupError("error", "Entry not found", "It may have been deleted or renamed in Enpass")
+    listed.fields = listed.fields || []
+    if (command === "list") entry = listed
+    else entry = attempt(filterTerm(listed.title)) || attempt(filterTerm(usernameOf(listed)))
+    // Never decrypt the whole vault to find one entry
+    if (!entry) throw new SetupError("error", "Can’t read this entry from Alfred",
+      "Its title and username can’t be searched by enpass-cli. Copy it in Enpass, or add a plain word to its title")
+  }
   if (!entry) throw new SetupError("error", "Entry not found", "It may have been deleted or renamed in Enpass")
   entry.fields = entry.fields || []
   return entry
@@ -409,7 +480,7 @@ function entryItem(entry) {
   const base = { entry_uuid: entry.uuid, entry_title: entry.title || "" }
   const mode = config.defaultAction
   const primaryLabel = primary >= 0 ? fieldLabel(entry.fields[primary]).toLowerCase() : ""
-  const fieldVars = (index) => ({ action: "field", field_index: String(index), field_type: entry.fields[index].type, field_label: fieldLabel(entry.fields[index]) })
+  const fieldVars = (index) => ({ action: "field", field_index: String(index), field_type: entry.fields[index].type, field_label: fieldLabel(entry.fields[index]), field_secret: isSecret(entry.fields[index]) ? "1" : "0" })
   // Enpass's own subtitle (e.g. "•••• 4242" for cards) when there's no username
   const subtitleParts = [username || (entry.subtitle || "").trim(), categoryName(entry.category)].filter(Boolean)
   if (entry.trashed) subtitleParts.unshift("In Trash")
@@ -435,7 +506,7 @@ function entryItem(entry) {
         ? { valid: true, subtitle: actionVerb(mode) + " one-time code", variables: { ...base, ...fieldVars(totp), mode } }
         : { valid: false, subtitle: "No one-time code" },
       ctrl: url
-        ? { valid: true, subtitle: "Open " + url, arg: url, variables: { ...base, action: "url" } }
+        ? { valid: true, subtitle: "Open " + displayURL(url), arg: url, variables: { ...base, action: "url" } }
         : { valid: false, subtitle: "No website" },
       shift: { valid: true, subtitle: "Show all fields", variables: { ...base, action: "fields" } },
       fn: primary >= 0
@@ -444,7 +515,7 @@ function entryItem(entry) {
     },
   }
   if (primary < 0) item.subtitle = [item.subtitle, "↩ Show fields"].filter(Boolean).join(SEP)
-  if (url) item.quicklookurl = url
+  if (url && !hasCredentials(url)) item.quicklookurl = url
   return item
 }
 
@@ -550,7 +621,7 @@ function listFields() {
     const items = []
     entry.fields.forEach((field, index) => {
       // Types starting with "." are Enpass's own metadata (linked Android apps, 2FA hints)
-      if (field.type.startsWith(".")) return
+      if (isMetadata(field)) return
       if (field.type === "section") {
         section = field.label || ""
         return
@@ -560,8 +631,9 @@ function listFields() {
       const secret = isSecret(field)
       const value = secret
         ? (field.type === "totp" ? "Current code" : MASK)
+        : isURL && hasCredentials(normalizeURL(field.value || "")) ? displayURL(normalizeURL(field.value))
         : (field.value || "").replace(/\s*\n\s*/g, " ⏎ ")
-      const vars = { ...base, action: "field", field_index: String(index), field_type: field.type, field_label: label }
+      const vars = { ...base, action: "field", field_index: String(index), field_type: field.type, field_label: label, field_secret: secret ? "1" : "0" }
       const item = {
         title: label,
         subtitle: [section, value].filter(Boolean).join(" › "),
@@ -572,7 +644,7 @@ function listFields() {
         mods: {
           cmd: { valid: true, subtitle: actionVerb(otherMode(mode)) + " " + label.toLowerCase(), variables: { ...vars, mode: otherMode(mode) } },
           ctrl: isURL && normalizeURL(field.value || "")
-            ? { valid: true, subtitle: "Open " + normalizeURL(field.value), arg: normalizeURL(field.value), variables: { ...vars, action: "open_field" } }
+            ? { valid: true, subtitle: "Open " + displayURL(normalizeURL(field.value)), arg: normalizeURL(field.value), variables: { ...vars, action: "open_field" } }
             : { valid: false, subtitle: "Not a web address" },
         },
       }
@@ -645,7 +717,7 @@ function clearClipboard(expectedCount) {
   if (String(pasteboard.changeCount) === String(expectedCount)) pasteboard.clearContents
 }
 
-function deliver(value, mode, what, entryTitle) {
+function deliver(value, mode, what) {
   const count = writeSecretToClipboard(value)
   // Schedule clearing first, so the secret doesn't stay on the clipboard if pasting fails
   scheduleClear(count)
@@ -659,7 +731,8 @@ function deliver(value, mode, what, entryTitle) {
   }
   const done = mode === "paste" ? "Pasted " : "Copied "
   const clears = config.clearAfter > 0 ? " Clipboard clears in " + config.clearAfter + " s." : ""
-  return notify(done + what, (entryTitle || "") + (entryTitle ? "." : "") + clears)
+  // Entry titles stay out of notifications: Notification Center keeps them and may show them on the lock screen
+  return notify(done + what, clears.trim() || "Clipboard won’t be cleared automatically.")
 }
 
 function openURL(url) {
@@ -667,7 +740,7 @@ function openURL(url) {
   if (!url) return notify("No website to open")
   if (!config.dryRun) {
     const nsurl = $.NSURL.URLWithString($(url))
-    if (nsurl.isNil() || !$.NSWorkspace.sharedWorkspace.openURL(nsurl)) return notify("Could not open website", url)
+    if (nsurl.isNil() || !$.NSWorkspace.sharedWorkspace.openURL(nsurl)) return notify("Could not open website", displayURL(url))
   }
   return silent()
 }
@@ -799,15 +872,18 @@ function act(input) {
       case "field": {
         const index = envVar("field_index")
         const type = envVar("field_type")
-        if (type === "totp") return deliver(totpValue(vault, password, uuid, title, index), mode, "one-time code", title)
-        const field = fieldAt(findEntry(vault, password, uuid, title, "show"), index, type)
-        if (!field.value) return notify(fieldLabel(field) + " is empty", title)
-        return deliver(field.value, mode, fieldLabel(field).toLowerCase(), title)
+        if (type === "totp") return deliver(totpValue(vault, password, uuid, title, index), mode, "one-time code")
+        // Non-secret fields come from `list`, so nothing is decrypted for them
+        const secret = SECRET_TYPES.has(type) || envVar("field_secret") === "1"
+        let field = fieldAt(findEntry(vault, password, uuid, title, secret ? "show" : "list"), index, type)
+        if (!secret && isSecret(field)) field = fieldAt(findEntry(vault, password, uuid, title, "show"), index, type)
+        if (!field.value) return notify(fieldLabel(field) + " is empty")
+        return deliver(field.value, mode, fieldLabel(field).toLowerCase())
       }
       case "username": {
         const username = usernameOf(findEntry(vault, password, uuid, title, "list"))
-        if (!username) return notify("No username", title)
-        return deliver(username, mode, "username", title)
+        if (!username) return notify("No username")
+        return deliver(username, mode, "username")
       }
       case "url":
         return openURL(urlOf(findEntry(vault, password, uuid, title, "list")))
